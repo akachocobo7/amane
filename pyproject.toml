@@ -1,0 +1,17 @@
+[project]
+name = "poitto"
+version = "0.1.0"
+description = "リアルタイム音声変換パイプライン（マイク → STT → VoiSona Talk → Discord）"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "faster-whisper",
+    "sounddevice",
+    "numpy",
+    "requests",
+    "webrtcvad-wheels",
+    "python-dotenv",
+    "onnxruntime<1.20",  # 1.20以降はIntel Mac (x86_64) 非対応
+]
+
+[project.scripts]
+poitto = "voice_pipeline_step1:main"
