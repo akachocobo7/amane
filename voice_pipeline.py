@@ -12,6 +12,7 @@ poitto — リアルタイム音声変換パイプライン
 import argparse
 import logging
 import os
+import re
 import sys
 import queue
 import threading
@@ -42,9 +43,6 @@ CHANNELS = 1  # モノラル
 FRAME_DURATION_MS = 30  # VADフレーム長 (ms) — 10/20/30のいずれか
 FRAME_SIZE = int(SAMPLE_RATE * FRAME_DURATION_MS / 1000)  # 480 samples
 
-SILENCE_MS = 800  # この長さ無音が続いたら「喋り終わり」と判定 (ms)
-SILENCE_FRAMES = int(SILENCE_MS / FRAME_DURATION_MS)
-
 MIN_SPEECH_MS = 300  # これより短い発話は無視 (ms)
 MIN_SPEECH_FRAMES = int(MIN_SPEECH_MS / FRAME_DURATION_MS)
 
@@ -72,6 +70,46 @@ WHISPER_COMPUTE_TYPE = "int8"  # float16 / int8（CPUではint8を使用）
 # VoiSona Talk API
 VOISONA_BASE_URL = "http://localhost:32766/api/talk/v1"
 
+# フレーズ分割パターン: 句読点・感嘆符・疑問符・読点で区切る
+PHRASE_SPLIT_PATTERN = re.compile(r"(?<=[。！？、．，!?])")
+
+
+# ---------------------------------------------------------------------------
+# 設定の読み込み
+# ---------------------------------------------------------------------------
+def load_settings() -> dict:
+    """環境変数から各種設定を読み込む。"""
+    load_dotenv()
+
+    silence_ms = int(os.getenv("SILENCE_MS", "800"))
+    # VAD aggressiveness: 0(最も緩い)〜3(最も厳しい)。
+    # 環境音で誤検知する場合は 2 や 3 に上げる。
+    vad_aggressiveness = int(os.getenv("VAD_AGGRESSIVENESS", "2"))
+
+    return {
+        "email": os.getenv("VOISONA_EMAIL"),
+        "password": os.getenv("VOISONA_API_PASSWORD"),
+        "voice_name": os.getenv("VOISONA_VOICE_NAME", "田中傘"),
+        "input_device_index": os.getenv("INPUT_DEVICE_INDEX"),
+        "silence_ms": silence_ms,
+        "silence_frames": int(silence_ms / FRAME_DURATION_MS),
+        "vad_aggressiveness": vad_aggressiveness,
+    }
+
+
+# ---------------------------------------------------------------------------
+# フレーズ分割
+# ---------------------------------------------------------------------------
+def split_phrases(text: str) -> list[str]:
+    """テキストを句読点でフレーズに分割する。
+
+    「こんにちは、今日はいい天気ですね。元気ですか？」
+    → ["こんにちは、", "今日はいい天気ですね。", "元気ですか？"]
+    """
+    parts = PHRASE_SPLIT_PATTERN.split(text)
+    # 空文字列を除去して返す
+    return [p for p in parts if p.strip()]
+
 
 # ---------------------------------------------------------------------------
 # VoiSona Talk API
@@ -84,6 +122,10 @@ class VoiSonaTalk:
         self.base = VOISONA_BASE_URL
         self.voice_name: str | None = None
         self.voice_version: str | None = None
+        # TTS再生用のスレッドとキュー
+        self._tts_queue: queue.Queue[str | None] = queue.Queue()
+        self._tts_thread: threading.Thread | None = None
+        self._tts_busy = threading.Event()  # TTSが再生中かどうか
 
     def fetch_voices(self) -> list[dict]:
         """利用可能なボイス一覧を取得する。"""
@@ -133,18 +175,15 @@ class VoiSonaTalk:
         log.error("Voice '%s' not found", name)
         return False
 
-    def speak(self, text: str) -> bool:
-        """テキストをVoiSona Talkで発話する（audio_device出力）。"""
-        if not self.voice_name:
-            log.error("No voice selected")
-            return False
-
+    def _synthesize(self, text: str) -> bool:
+        """テキストをVoiSona Talkで合成する（同期呼び出し）。"""
         url = f"{self.base}/speech-syntheses"
         payload = {
             "text": text,
             "language": "ja_JP",
             "voice_name": self.voice_name,
             "destination": "audio_device",
+            "force_enqueue": True,  # チャンク方式: 前の発話の後に続けて再生
         }
         if self.voice_version:
             payload["voice_version"] = self.voice_version
@@ -154,11 +193,71 @@ class VoiSonaTalk:
             resp = requests.post(url, json=payload, auth=self.auth, timeout=30)
             resp.raise_for_status()
             elapsed = (time.perf_counter() - t0) * 1000
-            log.info("TTS completed in %.0f ms: '%s'", elapsed, text)
+            log.info("TTS synthesized in %.0f ms: '%s'", elapsed, text)
             return True
         except requests.RequestException as e:
             log.error("TTS failed: %s", e)
             return False
+
+    def warmup(self) -> None:
+        """VoiSona Talkをウォーム状態にする（初回合成の遅延を排除）。"""
+        if not self.voice_name:
+            return
+        log.info("Warming up VoiSona TTS engine...")
+        # 極短テキストを合成して内部キャッシュを温める
+        self._synthesize("。")
+        log.info("Warmup complete")
+
+    def _tts_worker(self) -> None:
+        """TTSキューからテキストを取り出して順番に合成するワーカースレッド。"""
+        while True:
+            text = self._tts_queue.get()
+            if text is None:
+                break  # 終了シグナル
+            self._tts_busy.set()
+            self._synthesize(text)
+            self._tts_queue.task_done()
+            # キューが空になったら busy を解除
+            if self._tts_queue.empty():
+                self._tts_busy.clear()
+
+    def start_worker(self) -> None:
+        """TTSワーカースレッドを開始する。"""
+        self._tts_thread = threading.Thread(target=self._tts_worker, daemon=True)
+        self._tts_thread.start()
+
+    def speak(self, text: str) -> None:
+        """テキストをフレーズに分割し、TTSキューに投入する。
+
+        最初のフレーズから順に合成が始まるため、
+        長い文でも先頭部分がすぐ再生される。
+        """
+        if not self.voice_name:
+            log.error("No voice selected")
+            return
+
+        phrases = split_phrases(text)
+        if not phrases:
+            phrases = [text]  # 分割できなかった場合はそのまま
+
+        log.info("TTS queued %d phrase(s): %s", len(phrases), phrases)
+        for phrase in phrases:
+            self._tts_queue.put(phrase)
+
+    def wait_until_done(self) -> None:
+        """キュー内の全TTSが完了するまで待つ。"""
+        self._tts_queue.join()
+
+    @property
+    def is_busy(self) -> bool:
+        """TTSが再生中かどうか。"""
+        return self._tts_busy.is_set() or not self._tts_queue.empty()
+
+    def shutdown(self) -> None:
+        """ワーカースレッドを終了する。"""
+        self._tts_queue.put(None)
+        if self._tts_thread:
+            self._tts_thread.join(timeout=5)
 
 
 # ---------------------------------------------------------------------------
@@ -260,9 +359,12 @@ def run_pipeline(
     model: WhisperModel,
     tts: VoiSonaTalk,
     input_device: int | None = None,
+    silence_frames: int = 27,
+    vad_aggressiveness: int = 2,
 ) -> None:
     """メインの録音→STT→TTS パイプラインを実行する。"""
-    vad = webrtcvad.Vad(1)  # aggressiveness 0-3
+    vad = webrtcvad.Vad(vad_aggressiveness)
+    log.info("VAD aggressiveness=%d", vad_aggressiveness)
 
     audio_queue: queue.Queue[bytes] = queue.Queue()
     mic_muted = threading.Event()  # TTS再生中にマイクをミュートするフラグ
@@ -285,6 +387,14 @@ def run_pipeline(
         pcm = (indata[:, 0] * 32767).astype(np.int16).tobytes()
         audio_queue.put(pcm)
 
+    def drain_audio_queue():
+        """キューに溜まった音声データをすべて捨てる。"""
+        while not audio_queue.empty():
+            try:
+                audio_queue.get_nowait()
+            except queue.Empty:
+                break
+
     print("\n🎤 マイク入力を開始します。話しかけてください。(Ctrl+C で終了)\n")
 
     with sd.InputStream(
@@ -298,6 +408,7 @@ def run_pipeline(
         speech_frames: list[bytes] = []
         silence_count = 0
         is_speaking = False
+        speech_start_time = 0.0  # 遅延計測用
 
         try:
             while True:
@@ -311,17 +422,19 @@ def run_pipeline(
                     silence_count = 0
                     if not is_speaking:
                         is_speaking = True
+                        speech_start_time = time.perf_counter()
                         log.info("Speech started")
                 elif is_speaking:
                     # 喋り中に無音フレームが来た
                     speech_frames.append(frame)  # 無音部分も含めて保持
                     silence_count += 1
 
-                    if silence_count >= SILENCE_FRAMES:
+                    if silence_count >= silence_frames:
                         # 喋り終わり判定
                         is_speaking = False
 
                         if len(speech_frames) >= MIN_SPEECH_FRAMES:
+                            vad_elapsed = (time.perf_counter() - speech_start_time) * 1000
                             log.info(
                                 "Speech ended (%d frames, ~%d ms)",
                                 len(speech_frames),
@@ -343,24 +456,26 @@ def run_pipeline(
                             stt_ms = (time.perf_counter() - t0) * 1000
                             log.info("STT took %.0f ms", stt_ms)
 
-                            # TTS（再生中はマイクをミュートしてフィードバックループを防ぐ）
+                            # TTS（フレーズ分割して非同期でキューに投入）
                             if text:
                                 mic_muted.set()
-                                # キューに溜まった音声を捨てる
-                                while not audio_queue.empty():
-                                    try:
-                                        audio_queue.get_nowait()
-                                    except queue.Empty:
-                                        break
-                                tts.speak(text)
+                                drain_audio_queue()
+
+                                tts.speak(text)  # キューに投入（非同期）
+                                tts.wait_until_done()  # 全フレーズの合成完了を待つ
+
+                                total_ms = (time.perf_counter() - speech_start_time) * 1000
+                                log.info(
+                                    "⏱ Total latency: %.0f ms (VAD=%.0f, STT=%.0f, TTS=%.0f)",
+                                    total_ms,
+                                    vad_elapsed,
+                                    stt_ms,
+                                    total_ms - vad_elapsed - stt_ms,
+                                )
+
                                 # 再生後の残響を拾わないよう少し待つ
                                 time.sleep(0.3)
-                                # キューを再度クリアしてからミュート解除
-                                while not audio_queue.empty():
-                                    try:
-                                        audio_queue.get_nowait()
-                                    except queue.Empty:
-                                        break
+                                drain_audio_queue()
                                 mic_muted.clear()
                             else:
                                 log.info("No text recognized, skipping TTS")
@@ -375,6 +490,7 @@ def run_pipeline(
 
         except KeyboardInterrupt:
             print("\n\n👋 終了します。")
+            tts.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -397,46 +513,59 @@ def main():
     )
     args = parser.parse_args()
 
-    load_dotenv()
-
     # デバイス一覧表示モード
     if args.list_devices:
+        load_dotenv()
         list_audio_devices()
         return
+
+    # 設定の読み込み
+    settings = load_settings()
+
+    email = settings["email"]
+    password = settings["password"]
+    if not email or not password:
+        log.error("VOISONA_EMAIL / VOISONA_API_PASSWORD not set in .env")
+        sys.exit(1)
+
+    silence_ms = settings["silence_ms"]
+    silence_frames = settings["silence_frames"]
+    log.info("SILENCE_MS=%d (%d frames)", silence_ms, silence_frames)
 
     print("=" * 50)
     print("  poitto — リアルタイム音声変換パイプライン")
     print("=" * 50)
 
-    # 認証情報の読み込み
-    email = os.getenv("VOISONA_EMAIL")
-    password = os.getenv("VOISONA_API_PASSWORD")
-    if not email or not password:
-        log.error("VOISONA_EMAIL / VOISONA_API_PASSWORD not set in .env")
-        sys.exit(1)
-
     # VoiSona Talk 初期化
     tts = VoiSonaTalk(email, password)
 
     # ボイスの選択
-    target_voice = os.getenv("VOISONA_VOICE_NAME", "田中傘")
-    if not tts.select_voice(target_voice):
+    if not tts.select_voice(settings["voice_name"]):
         log.error("Cannot continue without a valid voice")
         sys.exit(1)
 
+    # TTSワーカースレッドを起動
+    tts.start_worker()
+
+    # ウォームアップ（初回合成の遅延を排除）
+    tts.warmup()
+
     # 入力デバイスの決定（コマンドライン引数 > .env > システム既定）
     input_device = args.input_device
-    if input_device is None:
-        env_device = os.getenv("INPUT_DEVICE_INDEX")
-        if env_device is not None:
-            input_device = int(env_device)
+    if input_device is None and settings["input_device_index"] is not None:
+        input_device = int(settings["input_device_index"])
 
     # Whisperモデルの読み込み
     log.info("Loading Whisper model...")
     model = create_whisper_model()
 
     # パイプライン実行
-    run_pipeline(model, tts, input_device=input_device)
+    run_pipeline(
+        model, tts,
+        input_device=input_device,
+        silence_frames=silence_frames,
+        vad_aggressiveness=settings["vad_aggressiveness"],
+    )
 
 
 if __name__ == "__main__":
