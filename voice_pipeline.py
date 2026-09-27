@@ -1,9 +1,15 @@
 """
-poitto — 段階1: 最小パイプライン（マイク → STT → VoiSona発話）
+poitto — リアルタイム音声変換パイプライン
 
-喋ったらVoiSonaがスピーカーで喋り返す。
+マイク → STT(faster-whisper) → VoiSona Talk(TTS) → 音声出力
+
+使い方:
+  uv run voice_pipeline.py                 # 通常起動
+  uv run voice_pipeline.py --list-devices   # オーディオデバイス一覧
+  uv run voice_pipeline.py --input-device 3 # マイクを指定して起動
 """
 
+import argparse
 import logging
 import os
 import sys
@@ -60,22 +66,11 @@ HALLUCINATION_PHRASES = {
 
 # STT設定
 WHISPER_MODEL_SIZE = "small"  # small / medium / large-v3
-WHISPER_DEVICE = "cpu"  # cuda / cpu
+WHISPER_DEVICE = "cpu"  # cuda / cpu（Windows本番ではcudaに変更）
 WHISPER_COMPUTE_TYPE = "int8"  # float16 / int8（CPUではint8を使用）
 
 # VoiSona Talk API
 VOISONA_BASE_URL = "http://localhost:32766/api/talk/v1"
-
-
-def load_config():
-    """環境変数から認証情報とボイス設定を読み込む。"""
-    load_dotenv()
-    email = os.getenv("VOISONA_EMAIL")
-    password = os.getenv("VOISONA_API_PASSWORD")
-    if not email or not password:
-        log.error("VOISONA_EMAIL / VOISONA_API_PASSWORD not set in .env")
-        sys.exit(1)
-    return email, password
 
 
 # ---------------------------------------------------------------------------
@@ -231,14 +226,54 @@ def transcribe(model: WhisperModel, audio: np.ndarray) -> str:
 
 
 # ---------------------------------------------------------------------------
+# オーディオデバイス
+# ---------------------------------------------------------------------------
+def list_audio_devices():
+    """利用可能なオーディオデバイスの一覧を表示する。"""
+    print("\n📋 利用可能なオーディオデバイス:\n")
+    devices = sd.query_devices()
+    for i, dev in enumerate(devices):
+        direction = []
+        if dev["max_input_channels"] > 0:
+            direction.append("入力")
+        if dev["max_output_channels"] > 0:
+            direction.append("出力")
+        default_in = i == sd.default.device[0]
+        default_out = i == sd.default.device[1]
+        markers = []
+        if default_in:
+            markers.append("既定入力")
+        if default_out:
+            markers.append("既定出力")
+        marker_str = f"  ◀ {', '.join(markers)}" if markers else ""
+        print(f"  [{i:2d}] {dev['name']}  ({'/'.join(direction)}){marker_str}")
+    print(f"\n  💡 .env に INPUT_DEVICE_INDEX=<番号> を設定するとマイクを指定できます")
+    print(
+        f"     Discordルーティング時は、VoiSona Talkの出力先をVB-CABLEに設定してください\n"
+    )
+
+
+# ---------------------------------------------------------------------------
 # VAD + 録音ループ
 # ---------------------------------------------------------------------------
-def run_pipeline(model: WhisperModel, tts: VoiSonaTalk) -> None:
+def run_pipeline(
+    model: WhisperModel,
+    tts: VoiSonaTalk,
+    input_device: int | None = None,
+) -> None:
     """メインの録音→STT→TTS パイプラインを実行する。"""
     vad = webrtcvad.Vad(1)  # aggressiveness 0-3
 
     audio_queue: queue.Queue[bytes] = queue.Queue()
     mic_muted = threading.Event()  # TTS再生中にマイクをミュートするフラグ
+
+    # 使用するマイクデバイスをログに記録
+    if input_device is not None:
+        dev_info = sd.query_devices(input_device)
+        log.info("Using input device [%d]: %s", input_device, dev_info["name"])
+    else:
+        dev_info = sd.query_devices(sd.default.device[0])
+        log.info("Using default input device: %s", dev_info["name"])
 
     def audio_callback(indata, frames, time_info, status):
         """sounddeviceのコールバック: 生の音声データをキューに投入。"""
@@ -257,6 +292,7 @@ def run_pipeline(model: WhisperModel, tts: VoiSonaTalk) -> None:
         channels=CHANNELS,
         dtype="float32",
         blocksize=FRAME_SIZE,
+        device=input_device,
         callback=audio_callback,
     ):
         speech_frames: list[bytes] = []
@@ -345,13 +381,39 @@ def run_pipeline(model: WhisperModel, tts: VoiSonaTalk) -> None:
 # メイン
 # ---------------------------------------------------------------------------
 def main():
+    parser = argparse.ArgumentParser(
+        description="poitto — リアルタイム音声変換パイプライン"
+    )
+    parser.add_argument(
+        "--list-devices",
+        action="store_true",
+        help="利用可能なオーディオデバイスの一覧を表示して終了",
+    )
+    parser.add_argument(
+        "--input-device",
+        type=int,
+        default=None,
+        help="入力デバイスのインデックス番号（--list-devices で確認）",
+    )
+    args = parser.parse_args()
+
+    load_dotenv()
+
+    # デバイス一覧表示モード
+    if args.list_devices:
+        list_audio_devices()
+        return
+
     print("=" * 50)
     print("  poitto — リアルタイム音声変換パイプライン")
-    print("  段階1: マイク → STT → VoiSona発話")
     print("=" * 50)
 
     # 認証情報の読み込み
-    email, password = load_config()
+    email = os.getenv("VOISONA_EMAIL")
+    password = os.getenv("VOISONA_API_PASSWORD")
+    if not email or not password:
+        log.error("VOISONA_EMAIL / VOISONA_API_PASSWORD not set in .env")
+        sys.exit(1)
 
     # VoiSona Talk 初期化
     tts = VoiSonaTalk(email, password)
@@ -362,12 +424,19 @@ def main():
         log.error("Cannot continue without a valid voice")
         sys.exit(1)
 
+    # 入力デバイスの決定（コマンドライン引数 > .env > システム既定）
+    input_device = args.input_device
+    if input_device is None:
+        env_device = os.getenv("INPUT_DEVICE_INDEX")
+        if env_device is not None:
+            input_device = int(env_device)
+
     # Whisperモデルの読み込み
     log.info("Loading Whisper model...")
     model = create_whisper_model()
 
     # パイプライン実行
-    run_pipeline(model, tts)
+    run_pipeline(model, tts, input_device=input_device)
 
 
 if __name__ == "__main__":
