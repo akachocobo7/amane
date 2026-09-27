@@ -328,7 +328,7 @@ def transcribe(model: WhisperModel, audio: np.ndarray) -> str:
 # ---------------------------------------------------------------------------
 def list_audio_devices():
     """利用可能なオーディオデバイスの一覧を表示する。"""
-    print("\n📋 利用可能なオーディオデバイス:\n")
+    print("\n利用可能なオーディオデバイス:\n")
     devices = sd.query_devices()
     for i, dev in enumerate(devices):
         direction = []
@@ -345,7 +345,7 @@ def list_audio_devices():
             markers.append("既定出力")
         marker_str = f"  ◀ {', '.join(markers)}" if markers else ""
         print(f"  [{i:2d}] {dev['name']}  ({'/'.join(direction)}){marker_str}")
-    print(f"\n  💡 .env に INPUT_DEVICE_INDEX=<番号> を設定するとマイクを指定できます")
+    print(f"\n  .env に INPUT_DEVICE_INDEX=<番号> を設定するとマイクを指定できます")
     print(
         f"     Discordルーティング時は、VoiSona Talkの出力先をVB-CABLEに設定してください\n"
     )
@@ -394,7 +394,7 @@ def run_pipeline(
             except queue.Empty:
                 break
 
-    print("\n🎤 マイク入力を開始します。話しかけてください。(Ctrl+C で終了)\n")
+    print("\nマイク入力を開始します。話しかけてください。(Ctrl+C で終了)\n")
 
     with sd.InputStream(
         samplerate=SAMPLE_RATE,
@@ -469,7 +469,7 @@ def run_pipeline(
                                     time.perf_counter() - speech_start_time
                                 ) * 1000
                                 log.info(
-                                    "⏱ Total latency: %.0f ms (VAD=%.0f, STT=%.0f, TTS=%.0f)",
+                                    "Total latency: %.0f ms (VAD=%.0f, STT=%.0f, TTS=%.0f)",
                                     total_ms,
                                     vad_elapsed,
                                     stt_ms,
@@ -492,7 +492,7 @@ def run_pipeline(
                         silence_count = 0
 
         except KeyboardInterrupt:
-            print("\n\n👋 終了します。")
+            print("\n\n終了します。")
             tts.shutdown()
 
 
@@ -501,7 +501,7 @@ def run_pipeline(
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="poitto — リアルタイム音声変換パイプライン"
+        description="poitto - リアルタイム音声変換パイプライン"
     )
     parser.add_argument(
         "--list-devices",
@@ -536,7 +536,7 @@ def main():
     log.info("SILENCE_MS=%d (%d frames)", silence_ms, silence_frames)
 
     print("=" * 50)
-    print("  poitto — リアルタイム音声変換パイプライン")
+    print("  poitto - リアルタイム音声変換パイプライン")
     print("=" * 50)
 
     # VoiSona Talk 初期化
