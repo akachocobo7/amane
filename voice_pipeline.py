@@ -18,6 +18,10 @@ import queue
 import threading
 import time
 
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 import numpy as np
 import requests
 import sounddevice as sd
@@ -293,6 +297,7 @@ def transcribe(model: WhisperModel, audio: np.ndarray) -> str:
         vad_filter=False,  # 自前VADを使うのでオフ
         no_speech_threshold=0.6,
         log_prob_threshold=-1.0,
+        condition_on_previous_text=False,
     )
     # セグメントを収集し、低信頼度のものを除外
     collected = []
@@ -307,6 +312,13 @@ def transcribe(model: WhisperModel, audio: np.ndarray) -> str:
         collected.append(seg.text)
 
     text = "".join(collected).strip()
+
+    # リピート除去: 同じ文字列が2回以上繰り返されている場合は1回にする
+    if text:
+        half = len(text) // 2
+        if len(text) % 2 == 0 and text[:half] == text[half:]:
+            log.info("Repetition filtered: '%s' -> '%s'", text, text[:half])
+            text = text[:half]
 
     # ハルシネーション（幻聴）フィルタ
     if text in HALLUCINATION_PHRASES:
