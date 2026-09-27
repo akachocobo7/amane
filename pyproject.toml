@@ -10,8 +10,8 @@ dependencies = [
     "requests",
     "webrtcvad-wheels",
     "python-dotenv",
-    "onnxruntime<1.20",  # 1.20以降はIntel Mac (x86_64) 非対応
+    "onnxruntime<1.20",
 ]
 
 [project.scripts]
-poitto = "voice_pipeline_step1:main"
+poitto = "voice_pipeline:main"
