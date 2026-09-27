@@ -64,7 +64,7 @@ HALLUCINATION_PHRASES = {
 
 # STT設定
 WHISPER_MODEL_SIZE = "small"  # small / medium / large-v3
-WHISPER_DEVICE = "cpu"  # cuda / cpu（Windows本番ではcudaに変更）
+WHISPER_DEVICE = "cpu"  # cuda / cpu
 WHISPER_COMPUTE_TYPE = "int8"  # float16 / int8（CPUではint8を使用）
 
 # VoiSona Talk API
@@ -82,8 +82,7 @@ def load_settings() -> dict:
     load_dotenv()
 
     silence_ms = int(os.getenv("SILENCE_MS", "800"))
-    # VAD aggressiveness: 0(最も緩い)〜3(最も厳しい)。
-    # 環境音で誤検知する場合は 2 や 3 に上げる。
+    # VAD aggressiveness: 0(最も緩い)〜3(最も厳しい)
     vad_aggressiveness = int(os.getenv("VAD_AGGRESSIVENESS", "2"))
 
     return {
@@ -434,7 +433,9 @@ def run_pipeline(
                         is_speaking = False
 
                         if len(speech_frames) >= MIN_SPEECH_FRAMES:
-                            vad_elapsed = (time.perf_counter() - speech_start_time) * 1000
+                            vad_elapsed = (
+                                time.perf_counter() - speech_start_time
+                            ) * 1000
                             log.info(
                                 "Speech ended (%d frames, ~%d ms)",
                                 len(speech_frames),
@@ -464,7 +465,9 @@ def run_pipeline(
                                 tts.speak(text)  # キューに投入（非同期）
                                 tts.wait_until_done()  # 全フレーズの合成完了を待つ
 
-                                total_ms = (time.perf_counter() - speech_start_time) * 1000
+                                total_ms = (
+                                    time.perf_counter() - speech_start_time
+                                ) * 1000
                                 log.info(
                                     "⏱ Total latency: %.0f ms (VAD=%.0f, STT=%.0f, TTS=%.0f)",
                                     total_ms,
@@ -561,7 +564,8 @@ def main():
 
     # パイプライン実行
     run_pipeline(
-        model, tts,
+        model,
+        tts,
         input_device=input_device,
         silence_frames=silence_frames,
         vad_aggressiveness=settings["vad_aggressiveness"],
