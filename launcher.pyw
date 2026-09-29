@@ -18,13 +18,15 @@ ENV_PATH = APP_DIR / ".env"
 PIPELINE_SCRIPT = APP_DIR / "voice_pipeline.py"
 
 # .envで管理する設定項目の定義
-ENV_FIELDS = [
-    ("VOISONA_EMAIL", "VoiSona メールアドレス", ""),
-    ("VOISONA_API_PASSWORD", "API パスワード", ""),
-    ("VOISONA_VOICE_NAME", "ボイス名", "田中傘"),
-    ("INPUT_DEVICE_INDEX", "入力デバイス番号（空欄=既定）", ""),
-    ("SILENCE_MS", "無音判定 (ms)", "800"),
-    ("VAD_AGGRESSIVENESS", "VAD感度 (0=緩い〜3=厳しい)", "2"),
+# (キー, ラベル, デフォルト値, 選択肢) — 選択肢ありならCombobox、なしならEntry
+ENV_FIELDS: list[tuple[str, str, str, list[str] | None]] = [
+    ("VOISONA_EMAIL", "VoiSona メールアドレス", "", None),
+    ("VOISONA_API_PASSWORD", "API パスワード", "", None),
+    ("VOISONA_VOICE_NAME", "ボイス名", "田中傘", None),
+    ("INPUT_DEVICE_INDEX", "入力デバイス番号（空欄=既定）", "", None),
+    ("WHISPER_DEVICE", "STTデバイス", "cuda", ["cuda", "cpu"]),
+    ("SILENCE_MS", "無音判定 (ms)", "800", None),
+    ("VAD_AGGRESSIVENESS", "VAD感度", "2", ["0", "1", "2", "3"]),
 ]
 
 
@@ -85,16 +87,20 @@ class AmaneLauncher(tk.Tk):
         form = ttk.LabelFrame(self, text="設定（.env）", padding=12)
         form.pack(fill="x", padx=16, pady=(8, 4))
 
-        self._entries: dict[str, ttk.Entry] = {}
-        for key, label, _ in ENV_FIELDS:
+        self._entries: dict[str, ttk.Entry | ttk.Combobox] = {}
+        for key, label, _, choices in ENV_FIELDS:
             row = ttk.Frame(form)
             row.pack(fill="x", pady=2)
             ttk.Label(row, text=label, width=28, anchor="w").pack(side="left")
-            entry = ttk.Entry(row, width=32)
-            entry.pack(side="left", fill="x", expand=True)
-            if "パスワード" in label:
-                entry.configure(show="*")
-            self._entries[key] = entry
+            if choices:
+                widget = ttk.Combobox(row, values=choices, state="readonly", width=29)
+                widget.pack(side="left", fill="x", expand=True)
+            else:
+                widget = ttk.Entry(row, width=32)
+                widget.pack(side="left", fill="x", expand=True)
+                if "パスワード" in label:
+                    widget.configure(show="*")
+            self._entries[key] = widget
 
         # --- ボタン ---
         btn_frame = ttk.Frame(self, padding=(16, 8))
@@ -126,13 +132,17 @@ class AmaneLauncher(tk.Tk):
 
     def _load_env(self) -> None:
         values = parse_env(ENV_PATH)
-        for key, _, default in ENV_FIELDS:
+        for key, _, default, choices in ENV_FIELDS:
             val = values.get(key, default)
-            self._entries[key].delete(0, "end")
-            self._entries[key].insert(0, val)
+            widget = self._entries[key]
+            if choices:
+                widget.set(val if val in choices else default)
+            else:
+                widget.delete(0, "end")
+                widget.insert(0, val)
 
     def _save_settings(self) -> None:
-        values = {key: self._entries[key].get().strip() for key, _, _ in ENV_FIELDS}
+        values = {key: self._entries[key].get().strip() for key, _, _, _ in ENV_FIELDS}
         save_env(ENV_PATH, values)
         self._append_log("[launcher] 設定を保存しました\n")
 

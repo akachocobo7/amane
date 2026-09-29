@@ -68,8 +68,6 @@ HALLUCINATION_PHRASES = {
 
 # STT設定
 WHISPER_MODEL_SIZE = "small"  # small / medium / large-v3
-WHISPER_DEVICE = "cpu"  # cuda / cpu
-WHISPER_COMPUTE_TYPE = "int8"  # float16 / int8（CPUではint8を使用）
 
 # VoiSona Talk API
 VOISONA_BASE_URL = "http://localhost:32766/api/talk/v1"
@@ -89,6 +87,9 @@ def load_settings() -> dict:
     # VAD aggressiveness: 0(最も緩い)〜3(最も厳しい)
     vad_aggressiveness = int(os.getenv("VAD_AGGRESSIVENESS", "2"))
 
+    whisper_device = os.getenv("WHISPER_DEVICE", "cuda").lower()
+    whisper_compute_type = "float16" if whisper_device == "cuda" else "int8"
+
     return {
         "email": os.getenv("VOISONA_EMAIL"),
         "password": os.getenv("VOISONA_API_PASSWORD"),
@@ -97,6 +98,8 @@ def load_settings() -> dict:
         "silence_ms": silence_ms,
         "silence_frames": int(silence_ms / FRAME_DURATION_MS),
         "vad_aggressiveness": vad_aggressiveness,
+        "whisper_device": whisper_device,
+        "whisper_compute_type": whisper_compute_type,
     }
 
 
@@ -266,19 +269,19 @@ class VoiSonaTalk:
 # ---------------------------------------------------------------------------
 # STT（faster-whisper）
 # ---------------------------------------------------------------------------
-def create_whisper_model() -> WhisperModel:
+def create_whisper_model(device: str, compute_type: str) -> WhisperModel:
     """faster-whisperモデルを読み込む。GPU失敗時はCPUにフォールバック。"""
     try:
         model = WhisperModel(
             WHISPER_MODEL_SIZE,
-            device=WHISPER_DEVICE,
-            compute_type=WHISPER_COMPUTE_TYPE,
+            device=device,
+            compute_type=compute_type,
         )
         log.info(
             "Whisper model loaded: size=%s device=%s compute=%s",
             WHISPER_MODEL_SIZE,
-            WHISPER_DEVICE,
-            WHISPER_COMPUTE_TYPE,
+            device,
+            compute_type,
         )
         return model
     except Exception as e:
@@ -489,7 +492,7 @@ def run_pipeline(
                                 )
 
                                 # 再生後の残響を拾わないよう少し待つ
-                                time.sleep(0.3)
+                                time.sleep(0.1)
                                 drain_audio_queue()
                                 mic_muted.clear()
                             else:
@@ -572,7 +575,10 @@ def main():
 
     # Whisperモデルの読み込み
     log.info("Loading Whisper model...")
-    model = create_whisper_model()
+    model = create_whisper_model(
+        device=settings["whisper_device"],
+        compute_type=settings["whisper_compute_type"],
+    )
 
     # パイプライン実行
     run_pipeline(
