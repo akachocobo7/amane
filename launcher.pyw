@@ -197,7 +197,14 @@ class AmaneLauncher(tk.Tk):
     def _stop_pipeline(self) -> None:
         if self._process and self._process.poll() is None:
             self._append_log("[launcher] パイプラインを停止しています...\n")
-            self._process.terminate()
+            if sys.platform == "win32":
+                # uv→python の子プロセスツリーごと終了させる
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(self._process.pid)],
+                    capture_output=True,
+                )
+            else:
+                self._process.terminate()
             try:
                 self._process.wait(timeout=5)
             except subprocess.TimeoutExpired:
