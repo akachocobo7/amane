@@ -1,1 +1,1 @@
-# poitto（ぽいっと）
+# amane

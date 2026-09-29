@@ -1,5 +1,5 @@
 """
-poitto ランチャー — 設定画面つきGUI
+amane ランチャー — 設定画面つきGUI
 
 ダブルクリックで起動。.envの編集と、パイプラインの起動・停止を1画面で行える。
 Windows環境では .pyw 拡張子によりコンソールウィンドウが表示されない。
@@ -55,10 +55,10 @@ def save_env(path: Path, values: dict[str, str]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-class PoittoLauncher(tk.Tk):
+class AmaneLauncher(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("poitto — ランチャー")
+        self.title("amane — ランチャー")
         self.geometry("620x560")
         self.resizable(False, False)
 
@@ -74,7 +74,7 @@ class PoittoLauncher(tk.Tk):
         # --- ヘッダー ---
         header = ttk.Frame(self, padding=(16, 12, 16, 4))
         header.pack(fill="x")
-        ttk.Label(header, text="poitto", font=("", 18, "bold")).pack(anchor="w")
+        ttk.Label(header, text="amane", font=("", 18, "bold")).pack(anchor="w")
         ttk.Label(
             header,
             text="リアルタイム音声変換パイプライン",
@@ -238,5 +238,5 @@ class PoittoLauncher(tk.Tk):
 
 
 if __name__ == "__main__":
-    app = PoittoLauncher()
+    app = AmaneLauncher()
     app.mainloop()

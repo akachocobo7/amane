@@ -1,5 +1,5 @@
 """
-poitto — リアルタイム音声変換パイプライン
+amane — リアルタイム音声変換パイプライン
 
 マイク → STT(faster-whisper) → VoiSona Talk(TTS) → 音声出力
 
@@ -37,7 +37,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%H:%M:%S",
 )
-log = logging.getLogger("poitto")
+log = logging.getLogger("amane")
 
 # ---------------------------------------------------------------------------
 # 定数
@@ -513,7 +513,7 @@ def run_pipeline(
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="poitto - リアルタイム音声変換パイプライン"
+        description="amane - リアルタイム音声変換パイプライン"
     )
     parser.add_argument(
         "--list-devices",
@@ -548,7 +548,7 @@ def main():
     log.info("SILENCE_MS=%d (%d frames)", silence_ms, silence_frames)
 
     print("=" * 50)
-    print("  poitto - リアルタイム音声変換パイプライン")
+    print("  amane - リアルタイム音声変換パイプライン")
     print("=" * 50)
 
     # VoiSona Talk 初期化

@@ -1,5 +1,5 @@
 [project]
-name = "poitto"
+name = "amane"
 version = "0.1.0"
 description = "リアルタイム音声変換パイプライン（マイク → STT → VoiSona Talk → Discord）"
 requires-python = ">=3.10,<3.13"
@@ -14,4 +14,4 @@ dependencies = [
 ]
 
 [project.scripts]
-poitto = "voice_pipeline:main"
+amane = "voice_pipeline:main"
